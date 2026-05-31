@@ -44,23 +44,49 @@ agent only decides which pillar — all writes are server/worker-side.
 
 ---
 
-## Phase 2 scope — what is and isn't in THIS build
+## Phase 2 scope — what's built and what's next
 
-**In (step 1):**
+**Step 1 — per-pillar router (DONE):**
 1. Per-pillar vault folders. The worker routes each capture into a folder under the vault
    root instead of one shared inbox.
 2. `VAULT_INBOX` → `VAULT_ROOT`. The worker now needs the vault *root* (the folder that holds
    the per-pillar folders), and `mkdir -p`s each pillar folder on demand.
 
+**Step 2 — task-table promotion (DONE):**
+3. A `type = 'task'` capture is, in addition to its normal pillar note, promoted into the
+   `tasks` operational table ([`supabase/migrations/0002_tasks.sql`](../supabase/migrations/0002_tasks.sql))
+   and surfaced as a rolling open-tasks note `_Tasks.md` in the pillar's folder.
+4. Promotion is **best-effort and idempotent**: it runs *after* the note has mirrored (the
+   core guarantee), so a not-yet-migrated `tasks` table just logs and the note still lands;
+   and the `tasks.source_capture_id` unique key makes reprocessing the same capture a no-op.
+
 **Deferred (later steps of Phase 2, NOT built now — each is additive on the `PILLARS` map):**
-- **Promote tasks to a table** — `type = 'task'` captures → a `tasks` operational table +
-  a per-pillar task list note. (Add an `if (type === 'task')` branch.)
 - **Claude enrichment** — a Claude pass per capture: clean title, 1-line summary, urgency
   flag, duplicate detection. (Add one step before the write.)
 - **Pillar-specific actions** — e.g. noosawood quote/job stub, bardeco urgent-ops flag.
   (Fill in per-pillar `actions` in the config map.)
 
 Still out (later phases entirely): pgvector / recall (Phase 3), the time-management app.
+
+---
+
+## Tasks: operational state
+
+`captures` is the raw stream of everything spoken; `tasks` is the actionable subset distilled
+out of it. The worker owns the promotion — the ElevenLabs agent still only decides the pillar
+and type.
+
+- **Table:** `tasks (id, created_at, pillar, title, detail, status, done_at, source_capture_id)`.
+  `status` ∈ `open | doing | done | dropped`; service-role-only (RLS on, no policies), same
+  lockdown as `captures`. `source_capture_id` is UNIQUE (idempotent promotion).
+- **The `_Tasks.md` note** in each pillar folder is **machine-owned and regenerated wholesale**
+  from the table on every promotion — an honest snapshot of open tasks. This respects the
+  one-way-OUT rule: ticking a checkbox in Obsidian does **not** sync back and will be
+  overwritten on the next rebuild. Status changes belong in the DB (a task UI / voice command
+  is a later step), not in the markdown.
+- **Migration is manual** (no CLI linked): run `0002_tasks.sql` in the Supabase SQL Editor,
+  exactly like `0001` in Phase 1. Until it's run, task captures still mirror as notes; only
+  the promotion is skipped (and logged).
 
 ---
 
@@ -95,26 +121,37 @@ cleanly** (recommended).
 
 ## Deploy
 
-On the Mac Mini (idempotent — same script as Phase 1, now prompts for the vault root):
+1. **Migration** (step 2 only, one-time): run `supabase/migrations/0002_tasks.sql` in the
+   Supabase SQL Editor.
+2. **Worker** on the Mac Mini (idempotent — same script as Phase 1, now prompts for the
+   vault root):
 
-```bash
-cd ~/SterlingOrchestrator/worker
-VAULT_ROOT="/Users/rasqualle_server/RASQUALLE-VAULT" bash deploy-on-mac-mini.sh
-```
+   ```bash
+   cd ~/SterlingOrchestrator/worker
+   VAULT_ROOT="/Users/rasqualle_server/RASQUALLE-VAULT" bash deploy-on-mac-mini.sh
+   ```
 
-This pulls the latest code, re-renders the plist with `VAULT_ROOT`, and reloads the worker.
+   This pulls the latest code, re-renders the plist with `VAULT_ROOT`, and reloads the worker.
 
 ---
 
 ## Acceptance test
 
-Speak to Sterling: *"Log an idea — spindle bogging on hardwood passes, try lowering feed rate
-before blaming the VFD. Noosa Wood."*
+**Step 1 — routing.** Speak to Sterling: *"Log an idea — spindle bogging on hardwood passes,
+try lowering feed rate before blaming the VFD. Noosa Wood."*
 
-Expect:
 1. A row in `captures` with `pillar = 'noosawood'`.
 2. A new `.md` file in **`20-NoosaWood/`** (not `00-Inbox`) within a few seconds.
 3. `synced_to_vault` flips to `true`.
 
-Then a `personal` capture should land in `50-Personal/`, a `bardeco` one in `10-BarDeco/`,
-etc. If notes sort into their pillar folders, step 1 of Phase 2 is live.
+A `personal` capture should land in `50-Personal/`, a `bardeco` one in `10-BarDeco/`, etc.
+
+**Step 2 — task promotion.** Speak a task: *"Task — call the linen supplier about the
+new towels. Bar Deco."*
+
+1. The capture mirrors as a note in `10-BarDeco/` (as above).
+2. A new row in `tasks` with `pillar = 'bardeco'`, `status = 'open'`, `source_capture_id`
+   pointing at the capture.
+3. `10-BarDeco/_Tasks.md` exists/updates with `- [ ] call the linen supplier …`.
+
+If both happen, Phase 2 (router + task promotion) is live.

@@ -8,8 +8,12 @@
 // Phase 1: every note landed in one shared inbox.
 // Phase 2 (the router): each note is routed into a per-pillar folder. This is a single
 // pillar-aware worker (a switch on pillar), NOT five processes. Future per-pillar logic
-// (task promotion, Claude enrichment, custom actions) hangs off the PILLARS config map
-// below, so adding it is additive — no rewrite of the routing or write path.
+// (Claude enrichment, custom actions) hangs off the PILLARS config map below, so adding
+// it is additive — no rewrite of the routing or write path.
+// Phase 2 step 2 (task promotion): a type='task' capture is ALSO inserted into the `tasks`
+// table and surfaced as a per-pillar open-tasks note. Best-effort: it never blocks the
+// mirror (which is the core guarantee), so a not-yet-migrated tasks table just logs and
+// the note still lands.
 //
 // Sync is one-way OUT: Supabase → markdown. Never the reverse.
 //
@@ -37,14 +41,17 @@ const VAULT_ROOT =
 // later phases grow this object (e.g. taskList, enrich, actions) WITHOUT touching the
 // routing or write path below. This map is the single place per-pillar behaviour lives.
 const PILLARS = {
-  bardeco: { folder: "10-BarDeco" },
-  noosawood: { folder: "20-NoosaWood" },
-  aios: { folder: "30-AI-OS" },
-  lcd: { folder: "40-LCD" },
-  personal: { folder: "50-Personal" },
+  bardeco: { folder: "10-BarDeco", name: "Bar Deco" },
+  noosawood: { folder: "20-NoosaWood", name: "Noosa Wood" },
+  aios: { folder: "30-AI-OS", name: "AI / OS" },
+  lcd: { folder: "40-LCD", name: "Luxury Coastal Destinations" },
+  personal: { folder: "50-Personal", name: "Personal" },
 };
 // Unknown/missing pillar should never silently vanish — park it where it's visible.
 const FALLBACK_FOLDER = "00-Inbox";
+// The rolling open-tasks note kept in each pillar folder. Leading underscore so Obsidian
+// pins it near the top of the folder, above the dated capture notes.
+const TASK_LIST_FILE = "_Tasks.md";
 
 const folderFor = (pillar) => PILLARS[pillar]?.folder ?? FALLBACK_FOLDER;
 
@@ -90,6 +97,51 @@ ${c.content}
   return { filename, md };
 }
 
+// Rebuild a pillar's open-tasks note from the tasks table. Regenerated wholesale (not
+// appended) so it's always an honest snapshot of operational state — consistent with the
+// one-way-OUT rule: this note is machine-owned. Ticking a box in Obsidian won't sync back
+// and would be overwritten on the next rebuild; status changes belong in the DB.
+async function rebuildTaskList(pillar) {
+  const conf = PILLARS[pillar];
+  if (!conf) return; // unknown pillar has no task list
+  const { data: tasks, error } = await sb
+    .from("tasks")
+    .select("id, title, created_at")
+    .eq("pillar", pillar)
+    .eq("status", "open")
+    .order("created_at", { ascending: true });
+  if (error) throw error;
+
+  const dir = `${VAULT_ROOT}/${conf.folder}`;
+  await mkdir(dir, { recursive: true });
+  const lines = (tasks ?? []).map((t) => `- [ ] ${t.title}  <!-- task:${t.id} -->`);
+  const md = `---
+type: task-list
+pillar: ${pillar}
+---
+# ${conf.name} — Open Tasks
+
+${lines.length ? lines.join("\n") : "_No open tasks._"}
+`;
+  await writeFile(`${dir}/${TASK_LIST_FILE}`, md);
+  return tasks?.length ?? 0;
+}
+
+// Promote a type='task' capture into the tasks table, then refresh its pillar's task list.
+// Idempotent via the unique source_capture_id: reprocessing the same capture is a no-op.
+async function promoteTask(c) {
+  const title = (c.title ?? c.content.split("\n")[0]).slice(0, 80).trim();
+  const { error } = await sb
+    .from("tasks")
+    .upsert(
+      { pillar: c.pillar, title, detail: c.content, source_capture_id: c.id },
+      { onConflict: "source_capture_id", ignoreDuplicates: true },
+    );
+  if (error) throw error;
+  const open = await rebuildTaskList(c.pillar);
+  console.log(`[vault-mirror] promoted task → ${c.pillar} (${open} open)`);
+}
+
 async function mirror(c) {
   try {
     const { filename, md } = noteFor(c);
@@ -103,6 +155,18 @@ async function mirror(c) {
   } catch (err) {
     // Leave synced_to_vault = false so a backfill / pg_cron fallback can retry.
     console.error(`[vault-mirror] failed to mirror ${c.id}:`, err);
+    return;
+  }
+
+  // Task promotion is additive and best-effort: the note above already mirrored (the core
+  // guarantee), so a promotion failure (e.g. tasks table not migrated yet) is logged but
+  // never re-fails the capture.
+  if (c.type === "task") {
+    try {
+      await promoteTask(c);
+    } catch (err) {
+      console.error(`[vault-mirror] task promotion failed for ${c.id} (is the tasks table migrated?):`, err.message ?? err);
+    }
   }
 }
 

@@ -16,6 +16,7 @@ Full spec and settled decisions:
 supabase/
   config.toml                         # project ref + verify_jwt=false for capture-thought
   migrations/0001_captures.sql        # captures table + RLS + Realtime
+  migrations/0002_tasks.sql           # tasks operational table (Phase 2 step 2)
   functions/capture-thought/index.ts  # the webhook ElevenLabs calls
 worker/
   vault-mirror.mjs                    # Mac Mini Realtime → markdown mirror (Phase 2: pillar router)
@@ -56,7 +57,11 @@ docs/
 The worker now routes each capture into its own pillar folder (`10-BarDeco`, `20-NoosaWood`,
 `30-AI-OS`, `40-LCD`, `50-Personal`; unknown → `00-Inbox`) instead of one shared inbox. It's a
 single pillar-aware worker, not five processes. Redeploy with the `VAULT_ROOT` line above.
+
+**Step 2 — task promotion:** a `type='task'` capture is also promoted into the `tasks`
+operational table and surfaced as a rolling `_Tasks.md` open-tasks note in its pillar folder.
+One-time setup: run `supabase/migrations/0002_tasks.sql` in the Supabase SQL Editor.
 Spec: [`docs/CAPTURE-PIPELINE-PHASE2.md`](docs/CAPTURE-PIPELINE-PHASE2.md).
 
-Still later phases: task-table promotion, Claude enrichment, pillar-specific actions
-(all additive on the worker's `PILLARS` config), then pgvector recall and the time app.
+Still later phases: Claude enrichment, pillar-specific actions (both additive on the worker's
+`PILLARS` config), then pgvector recall and the time app.
