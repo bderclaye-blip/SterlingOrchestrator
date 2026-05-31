@@ -54,11 +54,11 @@ agent only decides which pillar — all writes are server/worker-side.
 
 **Step 2 — task-table promotion (DONE):**
 3. A `type = 'task'` capture is, in addition to its normal pillar note, promoted into the
-   `tasks` operational table ([`supabase/migrations/0002_tasks.sql`](../supabase/migrations/0002_tasks.sql))
+   `capture_tasks` operational table ([`supabase/migrations/0002_capture_tasks.sql`](../supabase/migrations/0002_capture_tasks.sql))
    and surfaced as a rolling open-tasks note `_Tasks.md` in the pillar's folder.
 4. Promotion is **best-effort and idempotent**: it runs *after* the note has mirrored (the
-   core guarantee), so a not-yet-migrated `tasks` table just logs and the note still lands;
-   and the `tasks.source_capture_id` unique key makes reprocessing the same capture a no-op.
+   core guarantee), so a not-yet-migrated table just logs and the note still lands; and the
+   `capture_tasks.source_capture_id` unique key makes reprocessing the same capture a no-op.
 
 **Deferred (later steps of Phase 2, NOT built now — each is additive on the `PILLARS` map):**
 - **Claude enrichment** — a Claude pass per capture: clean title, 1-line summary, urgency
@@ -72,11 +72,17 @@ Still out (later phases entirely): pgvector / recall (Phase 3), the time-managem
 
 ## Tasks: operational state
 
-`captures` is the raw stream of everything spoken; `tasks` is the actionable subset distilled
-out of it. The worker owns the promotion — the ElevenLabs agent still only decides the pillar
-and type.
+`captures` is the raw stream of everything spoken; `capture_tasks` is the actionable subset
+distilled out of it. The worker owns the promotion — the ElevenLabs agent still only decides
+the pillar and type.
 
-- **Table:** `tasks (id, created_at, pillar, title, detail, status, done_at, source_capture_id)`.
+**Why `capture_tasks`, not `tasks`:** this project shares its Supabase database with the older
+STERLING-RASQUALLE-OS app, which already owns a `tasks` table (text ids, `bucket`/`completed`/
+`priority` columns, the old hyphenated pillars like `bar-deco`, with real rows in it). The two
+systems are kept separate for now, so the orchestrator namespaces its own table. **Never reshape
+or write the old `tasks` table from here.** A `tasks`-name collision is what surfaced this.
+
+- **Table:** `capture_tasks (id, created_at, pillar, title, detail, status, done_at, source_capture_id)`.
   `status` ∈ `open | doing | done | dropped`; service-role-only (RLS on, no policies), same
   lockdown as `captures`. `source_capture_id` is UNIQUE (idempotent promotion).
 - **The `_Tasks.md` note** in each pillar folder is **machine-owned and regenerated wholesale**
@@ -84,7 +90,7 @@ and type.
   one-way-OUT rule: ticking a checkbox in Obsidian does **not** sync back and will be
   overwritten on the next rebuild. Status changes belong in the DB (a task UI / voice command
   is a later step), not in the markdown.
-- **Migration is manual** (no CLI linked): run `0002_tasks.sql` in the Supabase SQL Editor,
+- **Migration is manual** (no CLI linked): run `0002_capture_tasks.sql` in the Supabase SQL Editor,
   exactly like `0001` in Phase 1. Until it's run, task captures still mirror as notes; only
   the promotion is skipped (and logged).
 
@@ -121,7 +127,7 @@ cleanly** (recommended).
 
 ## Deploy
 
-1. **Migration** (step 2 only, one-time): run `supabase/migrations/0002_tasks.sql` in the
+1. **Migration** (step 2 only, one-time): run `supabase/migrations/0002_capture_tasks.sql` in the
    Supabase SQL Editor.
 2. **Worker** on the Mac Mini (idempotent — same script as Phase 1, now prompts for the
    vault root):
@@ -150,7 +156,7 @@ A `personal` capture should land in `50-Personal/`, a `bardeco` one in `10-BarDe
 new towels. Bar Deco."*
 
 1. The capture mirrors as a note in `10-BarDeco/` (as above).
-2. A new row in `tasks` with `pillar = 'bardeco'`, `status = 'open'`, `source_capture_id`
+2. A new row in `capture_tasks` with `pillar = 'bardeco'`, `status = 'open'`, `source_capture_id`
    pointing at the capture.
 3. `10-BarDeco/_Tasks.md` exists/updates with `- [ ] call the linen supplier …`.
 

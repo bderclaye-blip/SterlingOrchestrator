@@ -10,10 +10,11 @@
 // pillar-aware worker (a switch on pillar), NOT five processes. Future per-pillar logic
 // (Claude enrichment, custom actions) hangs off the PILLARS config map below, so adding
 // it is additive — no rewrite of the routing or write path.
-// Phase 2 step 2 (task promotion): a type='task' capture is ALSO inserted into the `tasks`
-// table and surfaced as a per-pillar open-tasks note. Best-effort: it never blocks the
-// mirror (which is the core guarantee), so a not-yet-migrated tasks table just logs and
-// the note still lands.
+// Phase 2 step 2 (task promotion): a type='task' capture is ALSO inserted into the
+// `capture_tasks` table (named to avoid colliding with the old RASQUALLE-OS app's `tasks`
+// table in the same shared database) and surfaced as a per-pillar open-tasks note.
+// Best-effort: it never blocks the mirror (the core guarantee), so a not-yet-migrated
+// table just logs and the note still lands.
 //
 // Sync is one-way OUT: Supabase → markdown. Never the reverse.
 //
@@ -105,7 +106,7 @@ async function rebuildTaskList(pillar) {
   const conf = PILLARS[pillar];
   if (!conf) return; // unknown pillar has no task list
   const { data: tasks, error } = await sb
-    .from("tasks")
+    .from("capture_tasks")
     .select("id, title, created_at")
     .eq("pillar", pillar)
     .eq("status", "open")
@@ -132,7 +133,7 @@ ${lines.length ? lines.join("\n") : "_No open tasks._"}
 async function promoteTask(c) {
   const title = (c.title ?? c.content.split("\n")[0]).slice(0, 80).trim();
   const { error } = await sb
-    .from("tasks")
+    .from("capture_tasks")
     .upsert(
       { pillar: c.pillar, title, detail: c.content, source_capture_id: c.id },
       { onConflict: "source_capture_id", ignoreDuplicates: true },
