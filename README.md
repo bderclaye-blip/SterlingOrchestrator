@@ -36,13 +36,14 @@ docs/CAPTURE-PIPELINE.md              # the build spec (read this first)
    ```
 3. **ElevenLabs tool** — add the `capture_thought` webhook tool in the dashboard
    (URL, header, body params, system-prompt snippet all in the spec, §3).
-4. **Mac Mini worker** — on the Mac Mini:
+4. **Mac Mini worker** — on the Mac Mini (one idempotent script does clone/pull, deps,
+   config, and installs the launchd service so it runs 24/7 and restarts on reboot):
    ```bash
-   cd worker && npm install
-   cp ../.env.example .env   # fill in SERVICE_ROLE_KEY + VAULT_INBOX
-   npm run dev               # smoke test
-   # then install the launchd plist for auto-restart (see the .plist header)
+   git clone https://github.com/bderclaye-blip/SterlingOrchestrator.git ~/SterlingOrchestrator  # first time
+   cd ~/SterlingOrchestrator/worker
+   VAULT_INBOX="/absolute/path/to/Obsidian/00-Inbox" bash deploy-on-mac-mini.sh   # prompts for the service_role key
    ```
+   Re-run the last line anytime to pull the latest code and reload the worker.
 5. **Acceptance test** — speak the test phrase in the spec (§ Acceptance test) and confirm
    the row, the `.md` file, and `synced_to_vault = true`.
 
