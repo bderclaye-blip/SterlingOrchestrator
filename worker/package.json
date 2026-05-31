@@ -1,0 +1,14 @@
+{
+  "name": "vault-mirror-worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Mac Mini mirror worker — subscribes to Supabase captures Realtime and writes markdown into the Obsidian vault inbox.",
+  "scripts": {
+    "start": "node vault-mirror.mjs",
+    "dev": "node --env-file=.env vault-mirror.mjs"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.99.2"
+  }
+}

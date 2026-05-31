@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  launchd template for the Mac Mini mirror worker.
+
+  Setup on the Mac Mini:
+    1. Fill in the absolute paths and secrets below (replace every __PLACEHOLDER__).
+    2. cp com.rasqualle.vault-mirror.plist ~/Library/LaunchAgents/
+    3. launchctl load ~/Library/LaunchAgents/com.rasqualle.vault-mirror.plist
+       (to reload after edits: launchctl unload ... && launchctl load ...)
+
+  KeepAlive restarts it on crash; RunAtLoad starts it on login/reboot.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.rasqualle.vault-mirror</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/node</string>
+        <string>__REPO_PATH__/worker/vault-mirror.mjs</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>__REPO_PATH__/worker</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>SUPABASE_URL</key>
+        <string>https://hkgjybzinahwminzfgwg.supabase.co</string>
+        <key>SUPABASE_SERVICE_ROLE_KEY</key>
+        <string>__SERVICE_ROLE_KEY__</string>
+        <key>VAULT_INBOX</key>
+        <string>__VAULT_INBOX_PATH__</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>__REPO_PATH__/worker/vault-mirror.log</string>
+    <key>StandardErrorPath</key>
+    <string>__REPO_PATH__/worker/vault-mirror.error.log</string>
+</dict>
+</plist>

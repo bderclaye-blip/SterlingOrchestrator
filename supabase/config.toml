@@ -1,0 +1,9 @@
+# Supabase project config for STERLING ORCHESTRATOR.
+# Link with:  supabase link --project-ref hkgjybzinahwminzfgwg
+project_id = "hkgjybzinahwminzfgwg"
+
+# capture-thought is called by ElevenLabs (an external caller with no Supabase JWT),
+# so JWT verification is off. The function authenticates with the x-capture-secret header.
+# This is the config equivalent of deploying with --no-verify-jwt.
+[functions.capture-thought]
+verify_jwt = false
