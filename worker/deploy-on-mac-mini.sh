@@ -17,13 +17,23 @@ SUPABASE_URL="https://hkgjybzinahwminzfgwg.supabase.co"
 LABEL="com.rasqualle.vault-mirror"
 PLIST_DEST="$HOME/Library/LaunchAgents/$LABEL.plist"
 
-# 1. Clone or update the repo
-if [ -d "$REPO_DIR/.git" ]; then
-  echo "→ updating repo at $REPO_DIR"
-  git -C "$REPO_DIR" pull --ff-only
-else
-  echo "→ cloning into $REPO_DIR"
-  git clone "$GIT_URL" "$REPO_DIR"
+# 1. Clone or update the repo, then re-exec the freshly-pulled copy ONCE.
+#
+# This script git-pulls itself. Bash reads a script as it runs, so if the pull rewrites
+# this very file mid-run, bash resumes at a now-wrong byte offset and the first run after
+# any update aborts silently (re-running then works because it's "already up to date").
+# The guard below pulls first, then hands off (exec) to the updated copy and continues
+# cleanly — so a single run always does the right thing. DEPLOY_REEXECED stops it looping.
+if [ -z "${DEPLOY_REEXECED:-}" ]; then
+  if [ -d "$REPO_DIR/.git" ]; then
+    echo "→ updating repo at $REPO_DIR"
+    git -C "$REPO_DIR" pull --ff-only
+  else
+    echo "→ cloning into $REPO_DIR"
+    git clone "$GIT_URL" "$REPO_DIR"
+  fi
+  echo "→ running the updated deploy script"
+  DEPLOY_REEXECED=1 exec bash "$REPO_DIR/worker/deploy-on-mac-mini.sh" "$@"
 fi
 
 WORKER_DIR="$REPO_DIR/worker"
