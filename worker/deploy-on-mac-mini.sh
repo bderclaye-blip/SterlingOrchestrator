@@ -38,9 +38,12 @@ fi
 if [ -z "$SUPABASE_SERVICE_ROLE_KEY" ]; then
   read -r -s -p "Supabase service_role key (hidden): " SUPABASE_SERVICE_ROLE_KEY; echo
 fi
+# Create the vault inbox on first setup (a vault is just a folder; Obsidian opens it later).
+mkdir -p "$VAULT_INBOX"
 if [ ! -d "$VAULT_INBOX" ]; then
-  echo "ERROR: VAULT_INBOX is not a directory: $VAULT_INBOX" >&2; exit 1
+  echo "ERROR: could not create VAULT_INBOX: $VAULT_INBOX" >&2; exit 1
 fi
+echo "→ vault inbox: $VAULT_INBOX"
 
 # 3. Node + deps
 NODE_BIN="$(command -v node || true)"
