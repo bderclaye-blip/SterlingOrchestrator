@@ -31,6 +31,10 @@
         <string>__SERVICE_ROLE_KEY__</string>
         <key>VAULT_ROOT</key>
         <string>__VAULT_ROOT_PATH__</string>
+        <key>ANTHROPIC_API_KEY</key>
+        <string>__ANTHROPIC_API_KEY__</string>
+        <key>ENRICH_MODEL</key>
+        <string>__ENRICH_MODEL__</string>
     </dict>
 
     <key>RunAtLoad</key>

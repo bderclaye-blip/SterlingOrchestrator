@@ -53,6 +53,17 @@ fi
 if [ -z "$SUPABASE_SERVICE_ROLE_KEY" ]; then
   read -r -s -p "Supabase service_role key (hidden): " SUPABASE_SERVICE_ROLE_KEY; echo
 fi
+# Optional: Claude enrichment. Never prompt (it's optional). Take it from the environment,
+# else preserve whatever's already in the worker's .env so redeploys don't wipe it.
+: "${ANTHROPIC_API_KEY:=}"
+: "${ENRICH_MODEL:=}"
+if [ -z "$ANTHROPIC_API_KEY" ] && [ -f "$WORKER_DIR/.env" ]; then
+  ANTHROPIC_API_KEY="$(sed -n 's/^ANTHROPIC_API_KEY=//p' "$WORKER_DIR/.env")"
+fi
+if [ -z "$ENRICH_MODEL" ] && [ -f "$WORKER_DIR/.env" ]; then
+  ENRICH_MODEL="$(sed -n 's/^ENRICH_MODEL=//p' "$WORKER_DIR/.env")"
+fi
+: "${ENRICH_MODEL:=claude-haiku-4-5}"
 # Create the vault root on first setup (a vault is just a folder; Obsidian opens it later).
 # The worker mkdir -p's each per-pillar folder under here on demand.
 mkdir -p "$VAULT_ROOT"
@@ -76,8 +87,15 @@ cat > .env <<EOF
 SUPABASE_URL=$SUPABASE_URL
 SUPABASE_SERVICE_ROLE_KEY=$SUPABASE_SERVICE_ROLE_KEY
 VAULT_ROOT=$VAULT_ROOT
+ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY
+ENRICH_MODEL=$ENRICH_MODEL
 EOF
 echo "→ wrote $WORKER_DIR/.env (chmod 600)"
+if [ -n "$ANTHROPIC_API_KEY" ]; then
+  echo "→ Claude enrichment: ENABLED (model: $ENRICH_MODEL)"
+else
+  echo "→ Claude enrichment: disabled (set ANTHROPIC_API_KEY to enable)"
+fi
 
 # 5. Render + install the launchd plist
 mkdir -p "$HOME/Library/LaunchAgents"
@@ -85,6 +103,8 @@ sed -e "s#__NODE_BIN__#${NODE_BIN}#g" \
     -e "s#__REPO_PATH__#${REPO_DIR}#g" \
     -e "s#__SERVICE_ROLE_KEY__#${SUPABASE_SERVICE_ROLE_KEY}#g" \
     -e "s#__VAULT_ROOT_PATH__#${VAULT_ROOT}#g" \
+    -e "s#__ANTHROPIC_API_KEY__#${ANTHROPIC_API_KEY}#g" \
+    -e "s#__ENRICH_MODEL__#${ENRICH_MODEL}#g" \
     "$WORKER_DIR/$LABEL.plist" > "$PLIST_DEST"
 chmod 600 "$PLIST_DEST"
 echo "→ installed $PLIST_DEST"

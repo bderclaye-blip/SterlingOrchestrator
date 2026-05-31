@@ -60,9 +60,20 @@ agent only decides which pillar — all writes are server/worker-side.
    core guarantee), so a not-yet-migrated table just logs and the note still lands; and the
    `capture_tasks.source_capture_id` unique key makes reprocessing the same capture a no-op.
 
-**Deferred (later steps of Phase 2, NOT built now — each is additive on the `PILLARS` map):**
-- **Claude enrichment** — a Claude pass per capture: clean title, 1-line summary, urgency
-  flag, duplicate detection. (Add one step before the write.)
+**Step 3 — Claude enrichment (DONE):**
+5. Before writing, the worker runs a fast Claude (Haiku) pass that returns a **clean title**,
+   a **one-line summary**, and an **urgency** flag (`low|normal|high`) via a forced tool call
+   (structured output, no prose-parsing). The summary and urgency go into the note frontmatter,
+   the clean title becomes the note's H1 and the promoted task's title.
+6. Also **best-effort with a tight timeout** (8s): no `ANTHROPIC_API_KEY`, an API error, or a
+   timeout falls back to the raw capture — enrichment never blocks or delays a capture beyond
+   the timeout. Enrichment lives only in the markdown; it does **not** mutate the `captures`
+   row (that stays the raw stream). Enabled by setting `ANTHROPIC_API_KEY` on the worker.
+
+**Deferred (later steps, NOT built now — each is additive on the `PILLARS` map):**
+- **Duplicate detection** — deliberately deferred to **Phase 3**: telling whether a new capture
+  duplicates an old one is a *recall* problem, best solved once pgvector/embeddings exist, not
+  with per-capture history scans.
 - **Pillar-specific actions** — e.g. noosawood quote/job stub, bardeco urgent-ops flag.
   (Fill in per-pillar `actions` in the config map.)
 
@@ -93,6 +104,26 @@ or write the old `tasks` table from here.** A `tasks`-name collision is what sur
 - **Migration is manual** (no CLI linked): run `0002_capture_tasks.sql` in the Supabase SQL Editor,
   exactly like `0001` in Phase 1. Until it's run, task captures still mirror as notes; only
   the promotion is skipped (and logged).
+
+---
+
+## Claude enrichment
+
+Before a capture is written, the worker asks a fast model (Haiku by default) to clean it up:
+
+- **Output (forced tool call → structured):** `title` (clean 3–6 words), `summary` (one
+  sentence ≤20 words), `urgency` (`low|normal|high`). No prose-parsing, no hallucinated JSON.
+- **Where it lands:** `summary:` and `urgency:` in the note frontmatter; the clean `title`
+  becomes the note H1 and the promoted task's title. It does **not** mutate the `captures`
+  row — that remains the raw stream. Enrichment is a presentation/operational layer in markdown.
+- **Best-effort, non-blocking:** wrapped in an 8s timeout. No `ANTHROPIC_API_KEY` → disabled
+  (raw notes, no error). API error / timeout → falls back to the raw note. It can never block
+  or fail a capture; the worker logs `[enriched]` on success and a one-line skip otherwise.
+- **Enable it:** set `ANTHROPIC_API_KEY` on the worker (env or `worker/.env`); optional
+  `ENRICH_MODEL` overrides the model. The deploy script preserves an existing key across
+  redeploys and prints whether enrichment is ENABLED or disabled.
+- **Cost/latency:** one cheap Haiku call per capture, ~1–2s. Acceptable for single-user voice
+  volume; the timeout caps the worst case.
 
 ---
 
@@ -130,14 +161,18 @@ cleanly** (recommended).
 1. **Migration** (step 2 only, one-time): run `supabase/migrations/0002_capture_tasks.sql` in the
    Supabase SQL Editor.
 2. **Worker** on the Mac Mini (idempotent — same script as Phase 1, now prompts for the
-   vault root):
+   vault root). To enable step-3 enrichment, pass `ANTHROPIC_API_KEY` once (preserved on
+   later redeploys):
 
    ```bash
    cd ~/SterlingOrchestrator/worker
-   VAULT_ROOT="/Users/rasqualle_server/RASQUALLE-VAULT" bash deploy-on-mac-mini.sh
+   VAULT_ROOT="/Users/rasqualle_server/RASQUALLE-VAULT" \
+     ANTHROPIC_API_KEY="sk-ant-..." \
+     bash deploy-on-mac-mini.sh
    ```
 
-   This pulls the latest code, re-renders the plist with `VAULT_ROOT`, and reloads the worker.
+   This pulls the latest code, re-renders the plist (with `VAULT_ROOT` + the optional key),
+   and reloads the worker. Omit `ANTHROPIC_API_KEY` to run with enrichment disabled.
 
 ---
 
@@ -158,6 +193,16 @@ new towels. Bar Deco."*
 1. The capture mirrors as a note in `10-BarDeco/` (as above).
 2. A new row in `capture_tasks` with `pillar = 'bardeco'`, `status = 'open'`, `source_capture_id`
    pointing at the capture.
-3. `10-BarDeco/_Tasks.md` exists/updates with `- [ ] call the linen supplier …`.
+3. `10-BarDeco/_Tasks.md` exists/updates with `- [ ] Call The Linen Supplier …`.
 
-If both happen, Phase 2 (router + task promotion) is live.
+**Step 3 — enrichment** (only with `ANTHROPIC_API_KEY` set). Speak a messy, urgent thought:
+*"Update — the walk-in fridge at Bar Deco is sitting at 8 degrees, needs a tech today before
+we lose stock."*
+
+1. The note in `10-BarDeco/` has a clean H1 title, plus `summary:` and `urgency: high` in its
+   frontmatter.
+2. The worker log line ends with `[enriched]`.
+3. With the key unset, the same capture still mirrors fine — just no `summary`/`urgency` and
+   the raw title.
+
+If these happen, Phase 2 (router + task promotion + enrichment) is live.

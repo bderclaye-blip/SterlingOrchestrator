@@ -63,7 +63,11 @@ operational table and surfaced as a rolling `_Tasks.md` open-tasks note in its p
 (Named `capture_tasks`, not `tasks`, because the old RASQUALLE-OS app already owns a `tasks`
 table in this shared database.) One-time setup: run `supabase/migrations/0002_capture_tasks.sql`
 in the Supabase SQL Editor.
+
+**Step 3 — Claude enrichment:** a fast Haiku pass per capture cleans the title and adds a
+one-line `summary` + `urgency` flag to the note (and the task title). Best-effort: set
+`ANTHROPIC_API_KEY` on the worker to enable; unset = raw notes, no error.
 Spec: [`docs/CAPTURE-PIPELINE-PHASE2.md`](docs/CAPTURE-PIPELINE-PHASE2.md).
 
-Still later phases: Claude enrichment, pillar-specific actions (both additive on the worker's
+Still later phases: duplicate detection + pillar-specific actions (additive on the worker's
 `PILLARS` config), then pgvector recall and the time app.

@@ -15,12 +15,19 @@
 // table in the same shared database) and surfaced as a per-pillar open-tasks note.
 // Best-effort: it never blocks the mirror (the core guarantee), so a not-yet-migrated
 // table just logs and the note still lands.
+// Phase 2 step 3 (Claude enrichment): before writing, a fast Claude (Haiku) pass cleans the
+// title, writes a one-line summary, and flags urgency, folded into the note's frontmatter
+// and the promoted task's title. Also best-effort with a tight timeout: no ANTHROPIC_API_KEY,
+// an API error, or a timeout just falls back to the raw note — enrichment never blocks a capture.
 //
 // Sync is one-way OUT: Supabase → markdown. Never the reverse.
 //
 // Required env (see .env.example):
 //   SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, VAULT_ROOT
 //   (VAULT_INBOX is still accepted for back-compat — its parent dir is used as the root.)
+// Optional env:
+//   ANTHROPIC_API_KEY — enables Claude enrichment (unset = enrichment disabled, raw notes)
+//   ENRICH_MODEL      — override the enrichment model (default claude-haiku-4-5)
 //
 // Run under launchd (see com.rasqualle.vault-mirror.plist) so it restarts on reboot.
 // Local test:  node --env-file=.env worker/vault-mirror.mjs
@@ -75,8 +82,75 @@ const sb = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
   auth: { persistSession: false },
 });
 
-function noteFor(c) {
-  const slug = (c.title ?? c.content)
+// --- Claude enrichment (optional, best-effort) ---------------------------------------
+const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
+// `||` not `??`: an empty-string env (e.g. a blank plist value) must fall back to the default.
+const ENRICH_MODEL = process.env.ENRICH_MODEL || "claude-haiku-4-5";
+const ENRICH_TIMEOUT_MS = 8000;
+
+// A forced tool call guarantees structured output — no prose-parsing.
+const ENRICH_TOOL = {
+  name: "record_enrichment",
+  description: "Record cleaned-up filing metadata for a captured thought.",
+  input_schema: {
+    type: "object",
+    properties: {
+      title: { type: "string", description: "A clean 3–6 word title in Title Case, no trailing punctuation." },
+      summary: { type: "string", description: "One concise sentence (≤20 words) capturing the thought." },
+      urgency: { type: "string", enum: ["low", "normal", "high"], description: "How time-sensitive it is to act on." },
+    },
+    required: ["title", "summary", "urgency"],
+  },
+};
+
+// Returns { title, summary, urgency } or null (disabled / error / timeout). Never throws.
+async function enrich(c) {
+  if (!ANTHROPIC_API_KEY) return null;
+  const conf = PILLARS[c.pillar];
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), ENRICH_TIMEOUT_MS);
+  try {
+    const res = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      signal: ctrl.signal,
+      headers: {
+        "x-api-key": ANTHROPIC_API_KEY,
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        model: ENRICH_MODEL,
+        max_tokens: 300,
+        tools: [ENRICH_TOOL],
+        tool_choice: { type: "tool", name: "record_enrichment" },
+        messages: [{
+          role: "user",
+          content: `Pillar: ${conf?.name ?? c.pillar}. Capture type: ${c.type}.\n` +
+            `Captured thought (verbatim):\n"""${c.content}"""\n\n` +
+            `Clean this up for filing. Keep the owner's meaning; don't invent specifics.`,
+        }],
+      }),
+    });
+    if (!res.ok) throw new Error(`anthropic ${res.status}: ${(await res.text()).slice(0, 200)}`);
+    const data = await res.json();
+    const block = data.content?.find((b) => b.type === "tool_use");
+    const out = block?.input;
+    if (!out?.title || !out?.summary) return null;
+    return { title: out.title, summary: out.summary, urgency: out.urgency ?? "normal" };
+  } catch (err) {
+    console.error(`[vault-mirror] enrichment skipped for ${c.id}: ${err.message ?? err}`);
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Double-quote a value so it's a safe single-line YAML scalar (handles colons, quotes, etc).
+const yaml = (v) => JSON.stringify(String(v));
+
+function noteFor(c, enr) {
+  const title = enr?.title ?? c.title ?? "Captured";
+  const slug = (enr?.title ?? c.title ?? c.content)
     .slice(0, 40)
     .replace(/\W+/g, "-")
     .replace(/^-+|-+$/g, "")
@@ -84,14 +158,19 @@ function noteFor(c) {
   const stamp = c.created_at.slice(0, 16).replace(/[:T]/g, "-");
   // Suffix the row id so two captures in the same minute can't overwrite each other.
   const filename = `${stamp}-${slug || "note"}-${c.id.slice(0, 8)}.md`;
+  const fm = [
+    `created: ${c.created_at}`,
+    `pillar: ${c.pillar}`,
+    `type: ${c.type}`,
+    `status: raw`,
+    `source: ${c.source}`,
+  ];
+  if (enr?.summary) fm.push(`summary: ${yaml(enr.summary)}`);
+  if (enr?.urgency) fm.push(`urgency: ${enr.urgency}`);
   const md = `---
-created: ${c.created_at}
-pillar: ${c.pillar}
-type: ${c.type}
-status: raw
-source: ${c.source}
+${fm.join("\n")}
 ---
-# ${c.title ?? "Captured"}
+# ${title}
 
 ${c.content}
 `;
@@ -129,9 +208,10 @@ ${lines.length ? lines.join("\n") : "_No open tasks._"}
 }
 
 // Promote a type='task' capture into the tasks table, then refresh its pillar's task list.
-// Idempotent via the unique source_capture_id: reprocessing the same capture is a no-op.
-async function promoteTask(c) {
-  const title = (c.title ?? c.content.split("\n")[0]).slice(0, 80).trim();
+// Uses the enriched title when available. Idempotent via the unique source_capture_id:
+// reprocessing the same capture is a no-op.
+async function promoteTask(c, enr) {
+  const title = (enr?.title ?? c.title ?? c.content.split("\n")[0]).slice(0, 80).trim();
   const { error } = await sb
     .from("capture_tasks")
     .upsert(
@@ -144,15 +224,19 @@ async function promoteTask(c) {
 }
 
 async function mirror(c) {
+  // Enrichment runs before the write so it can shape the note + task. Best-effort: null on
+  // disabled/error/timeout, in which case everything below falls back to the raw capture.
+  const enr = await enrich(c);
+
   try {
-    const { filename, md } = noteFor(c);
+    const { filename, md } = noteFor(c, enr);
     const folder = folderFor(c.pillar);
     const dir = `${VAULT_ROOT}/${folder}`;
     // mkdir -p the pillar folder on demand so a new vault (or a new pillar) just works.
     await mkdir(dir, { recursive: true });
     await writeFile(`${dir}/${filename}`, md);
     await sb.from("captures").update({ synced_to_vault: true }).eq("id", c.id);
-    console.log(`[vault-mirror] wrote ${folder}/${filename} (${c.pillar}/${c.type})`);
+    console.log(`[vault-mirror] wrote ${folder}/${filename} (${c.pillar}/${c.type})${enr ? " [enriched]" : ""}`);
   } catch (err) {
     // Leave synced_to_vault = false so a backfill / pg_cron fallback can retry.
     console.error(`[vault-mirror] failed to mirror ${c.id}:`, err);
@@ -164,7 +248,7 @@ async function mirror(c) {
   // never re-fails the capture.
   if (c.type === "task") {
     try {
-      await promoteTask(c);
+      await promoteTask(c, enr);
     } catch (err) {
       console.error(`[vault-mirror] task promotion failed for ${c.id} (is the tasks table migrated?):`, err.message ?? err);
     }
