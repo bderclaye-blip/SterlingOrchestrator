@@ -5,7 +5,7 @@
 #
 #   git clone https://github.com/bderclaye-blip/SterlingOrchestrator.git ~/SterlingOrchestrator   # first time only
 #   cd ~/SterlingOrchestrator/worker
-#   VAULT_INBOX="/absolute/path/to/Obsidian/00-Inbox" bash deploy-on-mac-mini.sh
+#   VAULT_ROOT="/absolute/path/to/RASQUALLE-VAULT" bash deploy-on-mac-mini.sh
 #
 # It will prompt for the Supabase service_role key (or read $SUPABASE_SERVICE_ROLE_KEY).
 # Re-running just pulls latest, reinstalls deps, and reloads the service.
@@ -30,20 +30,26 @@ WORKER_DIR="$REPO_DIR/worker"
 cd "$WORKER_DIR"
 
 # 2. Collect the path + secret (env first, then prompt)
+# Back-compat: if an old VAULT_INBOX (.../00-Inbox) is passed, use its parent as the root.
+: "${VAULT_ROOT:=}"
 : "${VAULT_INBOX:=}"
 : "${SUPABASE_SERVICE_ROLE_KEY:=}"
-if [ -z "$VAULT_INBOX" ]; then
-  read -r -p "Obsidian inbox absolute path: " VAULT_INBOX
+if [ -z "$VAULT_ROOT" ] && [ -n "$VAULT_INBOX" ]; then
+  VAULT_ROOT="$(dirname "$VAULT_INBOX")"
+fi
+if [ -z "$VAULT_ROOT" ]; then
+  read -r -p "Obsidian vault root absolute path (holds the per-pillar folders): " VAULT_ROOT
 fi
 if [ -z "$SUPABASE_SERVICE_ROLE_KEY" ]; then
   read -r -s -p "Supabase service_role key (hidden): " SUPABASE_SERVICE_ROLE_KEY; echo
 fi
-# Create the vault inbox on first setup (a vault is just a folder; Obsidian opens it later).
-mkdir -p "$VAULT_INBOX"
-if [ ! -d "$VAULT_INBOX" ]; then
-  echo "ERROR: could not create VAULT_INBOX: $VAULT_INBOX" >&2; exit 1
+# Create the vault root on first setup (a vault is just a folder; Obsidian opens it later).
+# The worker mkdir -p's each per-pillar folder under here on demand.
+mkdir -p "$VAULT_ROOT"
+if [ ! -d "$VAULT_ROOT" ]; then
+  echo "ERROR: could not create VAULT_ROOT: $VAULT_ROOT" >&2; exit 1
 fi
-echo "→ vault inbox: $VAULT_INBOX"
+echo "→ vault root: $VAULT_ROOT"
 
 # 3. Node + deps
 NODE_BIN="$(command -v node || true)"
@@ -59,7 +65,7 @@ umask 077
 cat > .env <<EOF
 SUPABASE_URL=$SUPABASE_URL
 SUPABASE_SERVICE_ROLE_KEY=$SUPABASE_SERVICE_ROLE_KEY
-VAULT_INBOX=$VAULT_INBOX
+VAULT_ROOT=$VAULT_ROOT
 EOF
 echo "→ wrote $WORKER_DIR/.env (chmod 600)"
 
@@ -68,7 +74,7 @@ mkdir -p "$HOME/Library/LaunchAgents"
 sed -e "s#__NODE_BIN__#${NODE_BIN}#g" \
     -e "s#__REPO_PATH__#${REPO_DIR}#g" \
     -e "s#__SERVICE_ROLE_KEY__#${SUPABASE_SERVICE_ROLE_KEY}#g" \
-    -e "s#__VAULT_INBOX_PATH__#${VAULT_INBOX}#g" \
+    -e "s#__VAULT_ROOT_PATH__#${VAULT_ROOT}#g" \
     "$WORKER_DIR/$LABEL.plist" > "$PLIST_DEST"
 chmod 600 "$PLIST_DEST"
 echo "→ installed $PLIST_DEST"

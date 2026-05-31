@@ -6,7 +6,9 @@ right pillar → lands in Supabase → mirrors into the Obsidian vault.
 This is a **separate** project from `STERLING-RASQUALLE-OS` (the earlier time-management app).
 Same Supabase project (`hkgjybzinahwminzfgwg`), distinct codebases — they may interconnect later.
 
-Full spec and settled decisions: [`docs/CAPTURE-PIPELINE.md`](docs/CAPTURE-PIPELINE.md).
+Full spec and settled decisions:
+[`docs/CAPTURE-PIPELINE.md`](docs/CAPTURE-PIPELINE.md) (Phase 1, the spine) and
+[`docs/CAPTURE-PIPELINE-PHASE2.md`](docs/CAPTURE-PIPELINE-PHASE2.md) (Phase 2, the per-pillar router).
 
 ## Layout
 
@@ -16,10 +18,12 @@ supabase/
   migrations/0001_captures.sql        # captures table + RLS + Realtime
   functions/capture-thought/index.ts  # the webhook ElevenLabs calls
 worker/
-  vault-mirror.mjs                    # Mac Mini Realtime → markdown mirror
+  vault-mirror.mjs                    # Mac Mini Realtime → markdown mirror (Phase 2: pillar router)
   package.json
   com.rasqualle.vault-mirror.plist    # launchd template
-docs/CAPTURE-PIPELINE.md              # the build spec (read this first)
+docs/
+  CAPTURE-PIPELINE.md                 # Phase 1 build spec (read this first)
+  CAPTURE-PIPELINE-PHASE2.md          # Phase 2 build spec (per-pillar router)
 .env.example                          # required secrets
 ```
 
@@ -41,10 +45,18 @@ docs/CAPTURE-PIPELINE.md              # the build spec (read this first)
    ```bash
    git clone https://github.com/bderclaye-blip/SterlingOrchestrator.git ~/SterlingOrchestrator  # first time
    cd ~/SterlingOrchestrator/worker
-   VAULT_INBOX="/absolute/path/to/Obsidian/00-Inbox" bash deploy-on-mac-mini.sh   # prompts for the service_role key
+   VAULT_ROOT="/absolute/path/to/RASQUALLE-VAULT" bash deploy-on-mac-mini.sh   # prompts for the service_role key
    ```
    Re-run the last line anytime to pull the latest code and reload the worker.
 5. **Acceptance test** — speak the test phrase in the spec (§ Acceptance test) and confirm
    the row, the `.md` file, and `synced_to_vault = true`.
 
-Stop after the spine works. Per-pillar workers, pgvector recall, and the time app are later phases.
+## Phase 2 — the per-pillar router (current)
+
+The worker now routes each capture into its own pillar folder (`10-BarDeco`, `20-NoosaWood`,
+`30-AI-OS`, `40-LCD`, `50-Personal`; unknown → `00-Inbox`) instead of one shared inbox. It's a
+single pillar-aware worker, not five processes. Redeploy with the `VAULT_ROOT` line above.
+Spec: [`docs/CAPTURE-PIPELINE-PHASE2.md`](docs/CAPTURE-PIPELINE-PHASE2.md).
+
+Still later phases: task-table promotion, Claude enrichment, pillar-specific actions
+(all additive on the worker's `PILLARS` config), then pgvector recall and the time app.

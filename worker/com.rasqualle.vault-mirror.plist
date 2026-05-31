@@ -29,8 +29,8 @@
         <string>https://hkgjybzinahwminzfgwg.supabase.co</string>
         <key>SUPABASE_SERVICE_ROLE_KEY</key>
         <string>__SERVICE_ROLE_KEY__</string>
-        <key>VAULT_INBOX</key>
-        <string>__VAULT_INBOX_PATH__</string>
+        <key>VAULT_ROOT</key>
+        <string>__VAULT_ROOT_PATH__</string>
     </dict>
 
     <key>RunAtLoad</key>
