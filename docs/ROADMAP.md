@@ -6,6 +6,26 @@ doc. Settled details for shipped work live in `CAPTURE-PIPELINE.md` (Phase 1) an
 
 ---
 
+## North star — one agent, one second brain
+
+The end goal is a **single Sterling agent** that does everything a real executive assistant /
+second brain does — capture ideas and to-dos, track time per pillar, hold a normal
+conversation, recall past context, manage the calendar — all in **one app**, not a scatter of
+separate tools.
+
+Everything in this repo builds toward that, and every new capability is **additive**: one more
+tool on the *same* Sterling agent, one more data type in the *same* Supabase hub, surfaced in
+the *same* place. We never fork Sterling or restart — we stack. The capture pipeline (done) is
+the foundation; time tracking, recall, and the calendar are that same agent gaining more
+senses, not separate products.
+
+**The "one app" decision (settle before Track C):** where is the single front-end Henry sees
+it all in — evolve the existing STERLING-RASQUALLE-OS app into that home, or build the unified
+UI here and retire the old app? The data already shares one Supabase project, so either way
+it's a convergence, not a rebuild.
+
+---
+
 ## Done — the capture pipeline (Phases 1–2)
 
 Speak → routed by pillar → enriched → filed. Live on the always-on Mac Mini.
