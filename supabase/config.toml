@@ -7,3 +7,8 @@ project_id = "hkgjybzinahwminzfgwg"
 # This is the config equivalent of deploying with --no-verify-jwt.
 [functions.capture-thought]
 verify_jwt = false
+
+# time-session (Track A) is called by the same external agent — same shared-secret auth,
+# same reason JWT verification is off.
+[functions.time-session]
+verify_jwt = false
