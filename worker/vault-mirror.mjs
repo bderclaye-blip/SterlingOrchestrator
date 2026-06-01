@@ -148,16 +148,36 @@ async function enrich(c) {
 // Double-quote a value so it's a safe single-line YAML scalar (handles colons, quotes, etc).
 const yaml = (v) => JSON.stringify(String(v));
 
+// The note filename = the clean title, so Obsidian shows a readable name in the sidebar.
+// The capture date lives in the `created` frontmatter (sort the explorer by it if you want
+// chronological order) — it's no longer crammed into the filename. Strip filesystem- and
+// Obsidian-reserved characters and cap the length.
+function fileBaseFor(c, enr) {
+  const raw = (enr?.title ?? c.title ?? c.content ?? "Captured").trim();
+  const cleaned = raw
+    .replace(/[\/\\:*?"<>|#^[\]]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 80)
+    .trim();
+  return cleaned || "Captured";
+}
+
+// Pick a filename that won't clobber an existing note: "Title.md", then "Title 2.md", …
+async function uniqueName(dir, base) {
+  let name = `${base}.md`;
+  for (let i = 2; ; i++) {
+    try {
+      await access(`${dir}/${name}`);
+      name = `${base} ${i}.md`; // exists → try the next suffix
+    } catch {
+      return name; // free
+    }
+  }
+}
+
 function noteFor(c, enr) {
   const title = enr?.title ?? c.title ?? "Captured";
-  const slug = (enr?.title ?? c.title ?? c.content)
-    .slice(0, 40)
-    .replace(/\W+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .toLowerCase();
-  const stamp = c.created_at.slice(0, 16).replace(/[:T]/g, "-");
-  // Suffix the row id so two captures in the same minute can't overwrite each other.
-  const filename = `${stamp}-${slug || "note"}-${c.id.slice(0, 8)}.md`;
   const fm = [
     `created: ${c.created_at}`,
     `pillar: ${c.pillar}`,
@@ -167,14 +187,13 @@ function noteFor(c, enr) {
   ];
   if (enr?.summary) fm.push(`summary: ${yaml(enr.summary)}`);
   if (enr?.urgency) fm.push(`urgency: ${enr.urgency}`);
-  const md = `---
+  return `---
 ${fm.join("\n")}
 ---
 # ${title}
 
 ${c.content}
 `;
-  return { filename, md };
 }
 
 // Rebuild a pillar's open-tasks note from the tasks table. Regenerated wholesale (not
@@ -229,11 +248,12 @@ async function mirror(c) {
   const enr = await enrich(c);
 
   try {
-    const { filename, md } = noteFor(c, enr);
+    const md = noteFor(c, enr);
     const folder = folderFor(c.pillar);
     const dir = `${VAULT_ROOT}/${folder}`;
     // mkdir -p the pillar folder on demand so a new vault (or a new pillar) just works.
     await mkdir(dir, { recursive: true });
+    const filename = await uniqueName(dir, fileBaseFor(c, enr));
     await writeFile(`${dir}/${filename}`, md);
     await sb.from("captures").update({ synced_to_vault: true }).eq("id", c.id);
     console.log(`[vault-mirror] wrote ${folder}/${filename} (${c.pillar}/${c.type})${enr ? " [enriched]" : ""}`);
