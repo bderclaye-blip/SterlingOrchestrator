@@ -12,3 +12,7 @@ verify_jwt = false
 # same reason JWT verification is off.
 [functions.time-session]
 verify_jwt = false
+
+# recall (Phase 3) — Sterling searches past captures. Same external caller, same secret auth.
+[functions.recall]
+verify_jwt = false
