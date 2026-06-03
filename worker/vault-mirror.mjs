@@ -362,11 +362,19 @@ async function onTaskChange(payload) {
   }
 }
 
-sb.channel("vault-sync")
+// Separate channel per table: bundling two postgres_changes bindings on ONE channel makes a
+// failure in either binding tear down the whole channel (a TIMED_OUT/CHANNEL_ERROR loop that
+// silently stops delivering everything). Isolated channels keep captures syncing even if the
+// capture_tasks binding has trouble. Log the error detail so failures are diagnosable.
+const subLogger = (name) => (status, err) =>
+  console.log(`[vault-mirror] realtime[${name}]: ${status}${err ? ` — ${err.message ?? err}` : ""}`);
+
+sb.channel("captures-sync")
   .on("postgres_changes", { event: "*", schema: "public", table: "captures" }, onCaptureChange)
+  .subscribe(subLogger("captures"));
+
+sb.channel("tasks-sync")
   .on("postgres_changes", { event: "*", schema: "public", table: "capture_tasks" }, onTaskChange)
-  .subscribe((status) => {
-    console.log(`[vault-mirror] realtime: ${status}`);
-  });
+  .subscribe(subLogger("tasks"));
 
 console.log(`[vault-mirror] up. routing per-pillar under: ${VAULT_ROOT}`);
