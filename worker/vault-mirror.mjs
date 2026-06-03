@@ -20,7 +20,10 @@
 // and the promoted task's title. Also best-effort with a tight timeout: no ANTHROPIC_API_KEY,
 // an API error, or a timeout just falls back to the raw note — enrichment never blocks a capture.
 //
-// Sync is one-way OUT: Supabase → markdown. Never the reverse.
+// Sync is one-way OUT: Supabase → markdown. Supabase is the source of truth; the vault is
+// never read back. The worker reacts to INSERT, UPDATE and DELETE on `captures` (so an edit
+// or deletion in the app/DB is reflected in the vault, not just new captures), and to changes
+// on `capture_tasks` (to keep each pillar's _Tasks.md fresh).
 //
 // Required env (see .env.example):
 //   SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, VAULT_ROOT
@@ -33,7 +36,7 @@
 // Local test:  node --env-file=.env worker/vault-mirror.mjs
 
 import { createClient } from "@supabase/supabase-js";
-import { writeFile, access, mkdir } from "node:fs/promises";
+import { writeFile, readFile, readdir, unlink, access, mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 
 const { SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY } = process.env;
@@ -178,15 +181,22 @@ async function uniqueName(dir, base) {
 
 function noteFor(c, enr) {
   const title = enr?.title ?? c.title ?? "Captured";
+  // Prefer the row's own columns (set by app edits) over the one-shot enrichment, so a
+  // manual edit in the app is honoured rather than overwritten on a re-mirror.
+  const urgency = c.urgency ?? enr?.urgency;
   const fm = [
+    `id: ${c.id}`, // lets the worker locate this note again on later edits/deletes
     `created: ${c.created_at}`,
     `pillar: ${c.pillar}`,
     `type: ${c.type}`,
-    `status: raw`,
+    `status: ${c.status ?? "raw"}`,
     `source: ${c.source}`,
   ];
   if (enr?.summary) fm.push(`summary: ${yaml(enr.summary)}`);
-  if (enr?.urgency) fm.push(`urgency: ${enr.urgency}`);
+  if (urgency) fm.push(`urgency: ${urgency}`);
+  if (Array.isArray(c.tags) && c.tags.length) {
+    fm.push(`tags: [${c.tags.map(yaml).join(", ")}]`);
+  }
   return `---
 ${fm.join("\n")}
 ---
@@ -194,6 +204,53 @@ ${fm.join("\n")}
 
 ${c.content}
 `;
+}
+
+// Locate an existing note by the `id:` stamped in its frontmatter, scanning the pillar
+// folders (+ inbox). Lets a re-mirror or delete find the right file even after the title
+// or pillar changed. Returns the full path or null.
+async function findNoteById(id) {
+  if (!id) return null;
+  const folders = [...new Set([...Object.values(PILLARS).map((p) => p.folder), FALLBACK_FOLDER])];
+  for (const folder of folders) {
+    const dir = `${VAULT_ROOT}/${folder}`;
+    let names;
+    try {
+      names = await readdir(dir);
+    } catch {
+      continue; // folder doesn't exist yet
+    }
+    for (const name of names) {
+      if (!name.endsWith(".md") || name === TASK_LIST_FILE) continue;
+      try {
+        const text = await readFile(`${dir}/${name}`, "utf8");
+        if (text.includes(`id: ${id}`)) return `${dir}/${name}`;
+      } catch {
+        /* unreadable — skip */
+      }
+    }
+  }
+  return null;
+}
+
+async function removeNoteById(id) {
+  const path = await findNoteById(id);
+  if (path) {
+    await unlink(path);
+    console.log(`[vault-mirror] removed ${path}`);
+  }
+}
+
+// Reflect an edited capture: drop any existing note for this id (handles title/pillar change),
+// then write a fresh one from the current row. No re-enrichment — the row is authoritative now.
+async function reMirror(c) {
+  await removeNoteById(c.id);
+  const folder = folderFor(c.pillar);
+  const dir = `${VAULT_ROOT}/${folder}`;
+  await mkdir(dir, { recursive: true });
+  const filename = await uniqueName(dir, fileBaseFor(c, null));
+  await writeFile(`${dir}/${filename}`, noteFor(c, null));
+  console.log(`[vault-mirror] re-mirrored ${folder}/${filename} (edit)`);
 }
 
 // Rebuild a pillar's open-tasks note from the tasks table. Regenerated wholesale (not
@@ -275,12 +332,39 @@ async function mirror(c) {
   }
 }
 
-sb.channel("captures")
-  .on(
-    "postgres_changes",
-    { event: "INSERT", schema: "public", table: "captures" },
-    ({ new: c }) => mirror(c),
-  )
+// A capture changed. INSERT → mirror (with enrichment). UPDATE → re-mirror the edited row
+// (no enrichment, so app edits stick). DELETE → remove the note. Each is best-effort.
+async function onCaptureChange(payload) {
+  try {
+    if (payload.eventType === "DELETE") {
+      await removeNoteById(payload.old?.id);
+    } else if (payload.eventType === "INSERT") {
+      await mirror(payload.new);
+    } else {
+      await reMirror(payload.new);
+    }
+  } catch (err) {
+    console.error(`[vault-mirror] capture ${payload.eventType} failed:`, err.message ?? err);
+  }
+}
+
+// A task changed (created/edited/completed/deleted in the app) → rebuild that pillar's
+// _Tasks.md so the vault rollup stays honest. Needs the pillar from the row; on DELETE that
+// requires REPLICA IDENTITY FULL (see migration 0005).
+async function onTaskChange(payload) {
+  const pillar = payload.new?.pillar ?? payload.old?.pillar;
+  if (!pillar) return;
+  try {
+    const open = await rebuildTaskList(pillar);
+    console.log(`[vault-mirror] tasks ${payload.eventType} → ${pillar} (${open} open)`);
+  } catch (err) {
+    console.error(`[vault-mirror] task-list rebuild failed for ${pillar}:`, err.message ?? err);
+  }
+}
+
+sb.channel("vault-sync")
+  .on("postgres_changes", { event: "*", schema: "public", table: "captures" }, onCaptureChange)
+  .on("postgres_changes", { event: "*", schema: "public", table: "capture_tasks" }, onTaskChange)
   .subscribe((status) => {
     console.log(`[vault-mirror] realtime: ${status}`);
   });
