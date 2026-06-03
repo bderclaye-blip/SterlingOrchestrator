@@ -341,7 +341,17 @@ async function onCaptureChange(payload) {
     } else if (payload.eventType === "INSERT") {
       await mirror(payload.new);
     } else {
-      await reMirror(payload.new);
+      // UPDATE: ignore the worker's own `synced_to_vault=true` write (and any other no-op
+      // update) — re-mirroring it would overwrite the freshly-enriched note with an
+      // un-enriched one. Only re-mirror when a user-facing field actually changed.
+      const o = payload.old ?? {};
+      const n = payload.new;
+      const unchanged =
+        o.title === n.title && o.content === n.content && o.pillar === n.pillar &&
+        o.type === n.type && o.status === n.status && o.urgency === n.urgency &&
+        JSON.stringify(o.tags ?? null) === JSON.stringify(n.tags ?? null);
+      if (unchanged) return;
+      await reMirror(n);
     }
   } catch (err) {
     console.error(`[vault-mirror] capture ${payload.eventType} failed:`, err.message ?? err);
